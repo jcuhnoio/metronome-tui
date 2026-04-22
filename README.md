@@ -4,20 +4,21 @@ A high-precision terminal-based metronome with visual display and interactive co
 
 ## Features
 
+- **Sample-Accurate Timing**: Audio buffer-based timing eliminates jitter and process overhead
 - **Visual Beat Display**: Real-time visual feedback with filled (●) and empty (○) circles
 - **Time Signature Support**: Customize beats per measure (1-12 beats in X/4 time)
 - **Dynamic Tempo Control**: Adjust BPM from 30-300 with instant updates
 - **Beat Sound Customization**: Assign normal or accent sounds to individual beats
 - **Pause/Resume**: Space bar to pause and resume playback
-- **Efficient Threading**: Condition variable-based design with minimal CPU usage
-- **Drift-Free Timing**: High-precision timing using `std::chrono::steady_clock`
+- **Low CPU Usage**: Direct audio buffer writing with no external process spawning
+- **Cross-Platform Ready**: Built on PortAudio for macOS, Linux, and Windows support
 
 ## Building
 
 Requires:
 - C++17 compatible compiler (clang++ or g++)
 - FTXUI library (install via Homebrew: `brew install ftxui`)
-- macOS (for audio playback via `afplay`)
+- PortAudio library (install via Homebrew: `brew install portaudio`)
 
 Build with make:
 ```bash
@@ -27,9 +28,11 @@ make
 Or manually:
 ```bash
 clang++ -std=c++17 -Wall -Wextra -O2 \
-  -I/opt/homebrew/opt/ftxui/include \
-  -L/opt/homebrew/opt/ftxui/lib \
-  -lftxui-screen -lftxui-dom -lftxui-component \
+  -I$(brew --prefix ftxui)/include \
+  -I$(brew --prefix portaudio)/include \
+  -L$(brew --prefix ftxui)/lib \
+  -L$(brew --prefix portaudio)/lib \
+  -lftxui-screen -lftxui-dom -lftxui-component -lportaudio \
   -o metronome metronome.cpp
 ```
 
@@ -83,25 +86,36 @@ By default, beat 1 is accented and all other beats use the normal sound. Press n
 
 ### Architecture
 - **UI Framework**: FTXUI for terminal-based interactive UI
+- **Audio Engine**: PortAudio for low-latency, cross-platform audio output
 - **Threading Model**: 
   - Main thread handles UI rendering and user input
-  - Separate metronome thread manages timing and audio playback
-  - Communication via `std::condition_variable` and atomic flags
-- **Audio Playback**: macOS `afplay` command spawned as background processes
+  - Audio thread (managed by PortAudio) runs in real-time with high priority
+  - Communication via atomic variables and callbacks for thread-safe operation
+- **Audio Format**: 32-bit float stereo output at 48kHz sample rate
 
-### Timing Precision
-- Uses `std::chrono::steady_clock` for monotonic, high-precision timing
-- Implements drift-free scheduling with `sleep_until()` instead of `sleep_for()`
-- Each beat is scheduled relative to the original start time, preventing cumulative timing errors
-- Dynamic BPM changes recalculate timing on the next beat without introducing discontinuities
+### Sample-Accurate Timing
+- Beats are written directly to audio buffer at exact sample positions
+- No external process spawning or system calls for audio playback
+- Beat timing formula: `beat_sample = (beat_number * 60.0 * sample_rate) / bpm`
+- All beat positions calculated relative to start sample, preventing drift
+- Dynamic BPM changes recalculate future beat positions instantly
 
-### Thread Efficiency
-- Thread blocks on condition variable when paused (minimal CPU usage)
-- Wakes immediately on state changes (unpause, BPM change, quit)
-- UI updates synchronized with beat events only (no unnecessary redraws)
-- Sound playback happens before UI update to ensure visual/audio synchronization
+### Audio Callback Design
+- Real-time audio callback mixes beat sounds into continuous output buffer
+- Loads WAV files into memory at startup for zero-latency playback
+- Supports simultaneous sound mixing with proper clipping prevention
+- Buffer size: 256 frames for low latency (~5ms at 48kHz)
+- Sample-accurate beat placement guarantees exact timing
+
+### Performance Benefits
+- **No process overhead**: Eliminated spawning of `afplay` processes for each beat
+- **Zero jitter**: Sample-accurate timing removes system scheduling variability
+- **Predictable latency**: PortAudio manages buffering with known, consistent latency
+- **Lower CPU usage**: Direct buffer writing is more efficient than process creation
+- **Better control**: Foundation for future features like volume, panning, effects
 
 ### State Management
-- Thread-safe state updates using `std::mutex` and lock guards
-- Atomic flags for high-frequency checks (`running`, `paused`, `bpm_changed`)
-- Clean shutdown protocol with condition variable notification ensures proper thread termination
+- Thread-safe state updates using atomics for high-frequency access
+- Mutex protection for complex state (beat sounds array)
+- Clean shutdown protocol ensures proper PortAudio stream termination
+- UI updates triggered by audio callback via event posting
